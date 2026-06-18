@@ -2,7 +2,7 @@
 #include <Keypad.h>
 #include <ESP32Synth.h>
 #include <ESP32SynthNotes.h> 
-//zor628h7.
+
 ESP32Synth synth;
 
 // Definição dos pinos do I2S DAC
