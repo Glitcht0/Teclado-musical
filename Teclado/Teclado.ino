@@ -14,6 +14,35 @@ ESP32Synth synth;
 #define PINO_C_EXTRA 5
 bool estadoAnteriorC = HIGH; 
 
+// =========================================================================
+// NOVO: POTENCIÔMETRO DE VOLUME
+// =========================================================================
+#define PINO_POT_VOLUME 35   // Pino ADC1 (evite pinos ADC2 se usar Wi-Fi)
+#define VOLUME_MIN 0
+#define VOLUME_MAX 50         // Ajuste conforme o range aceito por setMasterVolume()
+#define INTERVALO_LEITURA_POT 40  // ms entre leituras, evita chamadas excessivas
+unsigned long ultimaLeituraPot = 0;
+int volumeAtualAplicado = -1;  // força a primeira aplicação
+
+// =========================================================================
+// NOVO: BOTÃO DE TROCA DE TIMBRE
+// =========================================================================
+#define PINO_BOTAO_TIMBRE 34
+bool estadoAnteriorTimbre = HIGH;
+unsigned long ultimoDebounceTimbre = 0;
+#define DEBOUNCE_TIMBRE_MS 50
+
+// Lista de formas de onda disponíveis para alternar.
+// Confira no ESP32Synth.h quais WAVE_* sua versão da lib realmente expõe.
+const uint8_t wave_triangle = static_cast<uint8_t> (WAVE_TRIANGLE);
+const uint8_t wave_saw = static_cast<uint8_t> (WAVE_SAW);
+const uint8_t wave_sine = static_cast<uint8_t> (WAVE_SINE);
+
+
+const WaveType formasOnda[] = { WAVE_SAW, WAVE_TRIANGLE, WAVE_SINE };
+const uint8_t QTD_FORMAS = sizeof(formasOnda) / sizeof(formasOnda[0]);
+uint8_t indiceFormaAtual = 0;
+
 // CONFIGURAÇÃO DA MATRIZ 4x4
 const byte LINS = 4;
 const byte COLS = 4;
@@ -66,6 +95,62 @@ float obterNota(char tecla) {
     default:  return 0; 
   }
 }
+
+// =========================================================================
+// NOVO: aplica a forma de onda atual em todos os canais de voz
+// =========================================================================
+void aplicarTimbreEmTodosCanais() {
+  WaveType novaForma = formasOnda[indiceFormaAtual];
+  for (int v = 0; v < MAX_VOICES; v++) {
+    synth.setWave(v, novaForma);
+  }
+  Serial.print("Timbre alterado para índice: ");
+  Serial.println(indiceFormaAtual);
+}
+// =========================================================================
+// NOVO: leitura equalizada (perceptual) do potenciômetro de volume
+// =========================================================================
+void atualizarVolume() {
+  unsigned long agora = millis();
+  if (agora - ultimaLeituraPot < INTERVALO_LEITURA_POT) return;
+  ultimaLeituraPot = agora;
+
+  int leituraBruta = analogRead(PINO_POT_VOLUME); // 0-4095 no ESP32
+  float normalizado = leituraBruta / 4095.0f;
+
+  // Curva quadrática: aproxima a resposta do ouvido humano (log-like),
+  // fazendo o giro do potenciômetro "sentir" mais uniforme.
+  float perceptual = normalizado * normalizado;
+
+  int novoVolume = (int)(VOLUME_MIN + perceptual * (VOLUME_MAX - VOLUME_MIN));
+
+  // Só reaplica se o valor realmente mudou, evitando chamadas redundantes
+  if (novoVolume != volumeAtualAplicado) {
+    volumeAtualAplicado = novoVolume;
+    synth.setMasterVolume(novoVolume);
+  }
+}
+
+// =========================================================================
+// NOVO: leitura com debounce do botão de timbre
+// =========================================================================
+void verificarBotaoTimbre() {
+  bool estadoAtual = digitalRead(PINO_BOTAO_TIMBRE);
+
+  if (estadoAtual != estadoAnteriorTimbre) {
+    unsigned long agora = millis();
+    if (agora - ultimoDebounceTimbre > DEBOUNCE_TIMBRE_MS) {
+      ultimoDebounceTimbre = agora;
+
+      // Troca no momento em que o botão é PRESSIONADO (transição para LOW)
+      if (estadoAtual == LOW) {
+        indiceFormaAtual = (indiceFormaAtual + 1) % QTD_FORMAS;
+        aplicarTimbreEmTodosCanais();
+      }
+      estadoAnteriorTimbre = estadoAtual;
+    }
+  }
+}
 // =========================================================================
 
 void setup() {
@@ -76,13 +161,19 @@ void setup() {
     synth.setMasterVolume(20);
 
     for (int i = 0; i < MAX_VOICES; i++) {
-        synth.setWave(i, WAVE_TRIANGLE);
+        synth.setWave(i, WAVE_SINE);
         synth.setEnv(i, 10, 200, 150, 800); 
         meusCanais[i].key = '\0';
         meusCanais[i].inUse = false;
     }
     
     pinMode(PINO_C_EXTRA, INPUT_PULLUP);
+
+    // NOVO: inicialização do botão de timbre e ADC do potenciômetro
+    pinMode(PINO_BOTAO_TIMBRE, INPUT_PULLUP);
+    analogReadResolution(12); // garante 0-4095 no ESP32
+    atualizarVolume();        // aplica volume inicial baseado na posição do pot
+
     Serial.println("Sintetizador Pronto com Escala Corrigida!");
 }
 
@@ -166,6 +257,12 @@ void loop() {
     }
     estadoAnteriorC = estadoAtualC;
   }
+
+  // --- 3. NOVO: LEITURA DO POTENCIÔMETRO DE VOLUME (não bloqueante) ---
+  atualizarVolume();
+
+  // --- 4. NOVO: LEITURA DO BOTÃO DE TROCA DE TIMBRE (não bloqueante) ---
+  verificarBotaoTimbre();
 
   delay(2); 
 }
